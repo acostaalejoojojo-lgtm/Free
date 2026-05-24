@@ -1,0 +1,126 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- GLOBAL HELPERS (Phase 3) ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == "phonkphonkswe@gmail.com" ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    // --- DEFAULT DENY (Phase 4.1) ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- VALIDATION HELPERS (Phase 2) ---
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'username']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.username is string && data.username.size() <= 50 &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+        (!('robux' in data) || (data.robux is number)) &&
+        (!('tokens' in data) || (data.tokens is number)) &&
+        (!('drovis' in data) || (data.drovis is number)) &&
+        (!('friends' in data) || (data.friends is list && data.friends.size() <= 500)) &&
+        (!('rank' in data) || (data.rank is string)) &&
+        (!('role' in data) || (data.role in ['user', 'admin'])) &&
+        (!('acceptedToS' in data) || (data.acceptedToS is bool));
+    }
+
+    function isValidGame(data) {
+      return data.keys().hasAll(['id', 'title', 'creatorUid']) &&
+        data.id is string && data.title is string && data.title.size() <= 100 &&
+        data.creatorUid is string &&
+        (!('likes' in data) || (data.likes is string)) &&
+        (!('playing' in data) || (data.playing is number));
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['reporterUid', 'targetId', 'targetType', 'status']) &&
+        data.reporterUid == request.auth.uid &&
+        data.status == 'pending' &&
+        data.targetId is string &&
+        data.targetType is string &&
+        (!('reason' in data) || (data.reason is string)) &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1000));
+    }
+
+    // --- COLLECTION MATCHES ---
+
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(uid) && isValidUser(incoming()) && !('role' in incoming());
+      allow update: if (isOwner(uid) || isAdmin()) && isValidUser(incoming()) && (
+        isAdmin() || (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'username', 'displayName', 'robux', 'tokens', 'drovis', 'friends', 
+            'avatarConfig', 'settings', 'gallery', 'rank', 'lastUsernameChange', 
+            'usernameChangeCards', 'isUpdated', 'acceptedToS', 'creatorCode', 
+            'usedCreatorCode', 'isCreatorProgramJoined'
+          ])
+        )
+      );
+    }
+
+    match /users_by_username/{username} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidId(incoming().uid);
+      allow update: if isAdmin();
+    }
+
+    match /global_settings/main {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /games/{gameId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidGame(incoming()) && incoming().creatorUid == request.auth.uid;
+      allow update: if (isSignedIn() && existing().creatorUid == request.auth.uid) || isAdmin();
+      allow delete: if (isSignedIn() && existing().creatorUid == request.auth.uid) || isAdmin();
+    }
+
+    match /videos/{videoId} {
+      allow read: if true;
+      allow create: if isSignedIn() && incoming().creatorUid == request.auth.uid;
+      allow update: if isSignedIn(); // Allow liking
+      allow delete: if (isSignedIn() && (existing().creatorUid == request.auth.uid)) || isAdmin();
+    }
+
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && isValidReport(incoming());
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /studio_maps/{username} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (isAdmin() || (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username == username));
+    }
+  }
+}
